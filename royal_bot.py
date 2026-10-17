@@ -72,7 +72,7 @@ def is_youtube_url(text):
 
 def download_track(query, random_mode=False):
     opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[acodec!=none]/bestaudio/best",
         "outtmpl": str(CACHE / "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
@@ -115,6 +115,10 @@ def download_track(query, random_mode=False):
 
 async def make_pcm(source, title):
     pcm = CACHE / (Path(source).stem + "_playback.pcm")
+    if pcm.is_file():
+        size = pcm.stat().st_size
+        if size > 0 and size % 9600 == 0:
+            return pcm
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", source, "-vn", "-f", "s16le", "-ac", "1", "-ar", "48000",

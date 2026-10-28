@@ -1,0 +1,55 @@
+name: Royal Bot Startup Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  startup-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    env:
+      API_ID: ${{ secrets.API_ID }}
+      API_HASH: ${{ secrets.API_HASH }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      STRING_SESSION: ${{ secrets.STRING_SESSION }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install system audio dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Check required secrets
+        run: |
+          test -n "$API_ID" || (echo "Missing API_ID repository secret" && exit 1)
+          test -n "$API_HASH" || (echo "Missing API_HASH repository secret" && exit 1)
+          test -n "$BOT_TOKEN" || (echo "Missing BOT_TOKEN repository secret" && exit 1)
+          test -n "$STRING_SESSION" || (echo "Missing STRING_SESSION repository secret" && exit 1)
+
+      - name: Start bot briefly and verify startup
+        shell: bash
+        run: |
+          set +e
+          timeout 90s python -u royal_bot.py > bot-startup.log 2>&1
+          result=$?
+          set -e
+          cat bot-startup.log
+          if grep -q "ABHI MUSIC ROYAL EDITION started" bot-startup.log; then
+            echo "Startup test passed. The temporary test process was stopped after 90 seconds."
+          else
+            echo "Startup test failed; see log output above."
+            exit 1
+          fi

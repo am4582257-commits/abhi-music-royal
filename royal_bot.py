@@ -37,7 +37,8 @@ CACHE.mkdir(parents=True, exist_ok=True)
 
 bot = Client("abhi_music_bot", api_id=API_ID, api_hash=API_HASH,
              bot_token=BOT_TOKEN, workers=1)
-user = Client("abhi_music_user", api_id=API_ID, api_hash=API_HASH, workers=1)
+user = Client("abhi_music_user", api_id=API_ID, api_hash=API_HASH,
+             session_string=os.getenv("STRING_SESSION") or None, workers=1)
 calls = None
 queues, current, autoplay, locks, suppress_end = {}, {}, {}, {}, {}
 nexting = set()

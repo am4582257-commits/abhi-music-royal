@@ -1,0 +1,93 @@
+name: Build NTgCalls 3.0.6 Android ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android-arm64:
+    name: Build arm64-v8a static library
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout ABHI MUSIC ROYAL repository
+        uses: actions/checkout@v4
+
+      - name: Clone official NTgCalls v3.0.6 source
+        run: |
+          git clone --depth 1 --branch v3.0.6 --recurse-submodules \
+            https://github.com/pytgcalls/ntgcalls.git ntgcalls-src
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git
+          python -m pip install --upgrade pip setuptools ninja
+
+      - name: Restrict Android build to ARM64
+        working-directory: ntgcalls-src
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("setup.py")
+          source = path.read_text()
+          old = "'android': ['arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'],"
+          new = "'android': ['arm64-v8a'],"
+          if old not in source:
+              raise SystemExit("Could not find the expected Android ABI matrix in setup.py")
+          path.write_text(source.replace(old, new, 1))
+          print("Android ABI matrix restricted to arm64-v8a")
+          PY
+
+      - name: Build NTgCalls Android ARM64
+        working-directory: ntgcalls-src
+        shell: bash
+        run: |
+          set -o pipefail
+          python setup.py build_lib --target=android 2>&1 | tee ../ntgcalls-build.log
+
+      - name: Package ARM64 static library and headers
+        working-directory: ntgcalls-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIB="$(find targets/android/app/src/main/jni/ntgcalls/arm64-v8a -maxdepth 1 -type f -name 'libntgcalls.a' -print -quit)"
+          if [ -z "$LIB" ]; then
+            echo "libntgcalls.a was not produced for arm64-v8a"
+            find targets/android -type f -name '*.a' -print || true
+            exit 1
+          fi
+
+          mkdir -p ../ntgcalls-artifact/include
+          cp "$LIB" ../ntgcalls-artifact/
+          cp -R ntgcalls/include ../ntgcalls-artifact/include/ntgcalls
+          cp -R wrtc/include ../ntgcalls-artifact/include/wrtc
+          printf 'NTgCalls version: 3.0.6\nAndroid ABI: arm64-v8a\n' > ../ntgcalls-artifact/BUILD-INFO.txt
+          file ../ntgcalls-artifact/libntgcalls.a
+          tar -czf ../ntgcalls-3.0.6-android-arm64.tar.gz -C .. ntgcalls-artifact
+
+      - name: Upload Android ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntgcalls-3.0.6-android-arm64
+          path: ntgcalls-3.0.6-android-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntgcalls-android-build-log
+          path: ntgcalls-build.log
+          if-no-files-found: ignore
+          retention-days: 7

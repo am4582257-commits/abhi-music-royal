@@ -22,7 +22,7 @@ pe.GroupcallInvalid = pe.BadRequest
 from pytgcalls import PyTgCalls, filters as call_filters
 from pytgcalls.types import StreamEnded
 from ntgcalls import MediaSource
-from pytgcalls.types.raw import Stream, AudioStream, AudioParameters
+from pytgcalls.types.raw import Stream, AudioStream, AudioParameters, VideoStream, VideoParameters
 
 logging.basicConfig(level=logging.WARNING)
 load_dotenv(Path(__file__).with_name(".env"))
@@ -183,6 +183,134 @@ def download_track(query, random_mode=False):
         "results may be DRM-protected or unavailable. "
         f"Last error: {last_error}"
     )
+
+
+def download_video_track(query):
+    """Find and download a playable video without relying on YouTube cookies."""
+    opts = {
+        "format": "best[height<=360][ext=mp4]/best[height<=360]/best",
+        "outtmpl": str(CACHE / "video_%(id)s.%(ext)s"),
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "restrictfilenames": True,
+    }
+
+    # Direct supported video URLs can be supplied by the user.
+    if is_youtube_url(query):
+        candidates = [query]
+    elif urlparse(query).scheme in ("http", "https"):
+        candidates = [query]
+    else:
+        # Dailymotion's public search API is used as a YouTube-independent source.
+        api = "https://api.dailymotion.com/videos?" + urlencode({
+            "search": query,
+            "fields": "id,title,url,duration",
+            "limit": "10",
+        })
+        request = __import__("urllib.request", fromlist=["Request"]).Request(
+            api, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        candidates = [
+            item.get("url") for item in data.get("list", [])
+            if item.get("url")
+        ]
+
+    last_error = None
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        for candidate in candidates:
+            try:
+                info = ydl.extract_info(candidate, download=True)
+                if info and info.get("entries"):
+                    info = next((entry for entry in info["entries"] if entry), None)
+                if not info:
+                    continue
+                path = None
+                for item in info.get("requested_downloads") or []:
+                    file_path = item.get("filepath")
+                    if file_path and Path(file_path).is_file():
+                        path = file_path
+                        break
+                if not path:
+                    prepared = ydl.prepare_filename(info)
+                    if Path(prepared).is_file():
+                        path = prepared
+                if not path:
+                    matches = list(CACHE.glob(f"video_{info.get('id', '')}.*"))
+                    if matches:
+                        path = str(matches[0])
+                if path:
+                    return str(path), info.get("title", "Video"), int(info.get("duration") or 0)
+            except Exception as exc:
+                last_error = exc
+                logging.warning("Skipping video result %s: %s", candidate, exc)
+
+    raise RuntimeError(
+        "Dailymotion/direct video source se playable video nahi mila. "
+        "YouTube URL GitHub runner par bot-check ki wajah se fail ho sakta hai. "
+        f"Last error: {last_error}"
+    )
+
+
+async def play_video_track(cid, query):
+    async with get_lock(cid):
+        preparing = await bot.send_message(
+            cid, "🎬 Finding a video source and preparing the stream…"
+        )
+        source, title, duration = await asyncio.to_thread(
+            download_video_track, query
+        )
+        pcm = await make_pcm(source, title)
+        audio = AudioStream(
+            MediaSource.FILE, str(pcm), AudioParameters(48000, 1)
+        )
+        video = VideoStream(
+            MediaSource.FILE, str(source), VideoParameters(640, 360, 20)
+        )
+        await calls.play(
+            cid, Stream(microphone=audio, camera=video)
+        )
+
+        stop_timeline(current.get(cid))
+        current[cid] = {
+            "title": title,
+            "query": query,
+            "source": source,
+            "duration": duration,
+            "started_at": time.monotonic(),
+            "paused_at": None,
+            "paused_total": 0,
+            "message_id": None,
+            "is_video": True,
+        }
+        track = current[cid]
+        caption = (
+            "<b>ꫝʙ፝֟ʜɪㅤᴹᵘᶳᶤᶜ 🎬</b>\\n"
+            "<i>ɴᴏᴡ ᴘʟᴀʏɪɴɢ — ᴠɪᴅᴇᴏ</i>\\n\\n"
+            f"🎥 <b>{title}</b>{timeline_text(track)}\\n\\n"
+            "━━━━━━━━━━━━━━━━━━━━\\n"
+            "<i>ʙʏ :- Aʙнɪ ϻᴇᴇɴᴀ ᥫ᭡</i>\\n"
+            "➤ @Abhiiiii009"
+        )
+        sent = await bot.send_photo(
+            cid,
+            photo=str(Path(__file__).parent / "abhi_royal_theme.png"),
+            caption=caption,
+            reply_markup=keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        try:
+            await preparing.delete()
+        except Exception:
+            pass
+        if current.get(cid) is track:
+            track["message_id"] = sent.id
+            track["timeline_task"] = asyncio.create_task(
+                update_timeline(cid, track, sent)
+            )
 
 async def make_pcm(source, title):
     pcm = CACHE / (Path(source).stem + "_playback.pcm")
@@ -437,6 +565,22 @@ async def play_cmd(_, message):
             "🎧 To play a song, please add the assistant account @Abhiiiii009 "
             "to the group and grant it permission to play music in the voice chat.\n\n"
             "✅ Once added, please try /play again."
+        )
+
+
+@bot.on_message(filters.command("vplay"))
+async def vplay_cmd(_, message):
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.reply_text(
+            "Use: /vplay video name or a supported video URL"
+        )
+    try:
+        await play_video_track(message.chat.id, parts[1])
+    except Exception as exc:
+        logging.exception("Video playback failed")
+        await message.reply_text(
+            f"❌ Video playback failed: {type(exc).__name__}: {exc}"
         )
 
 @bot.on_message(filters.command("search"))

@@ -79,7 +79,15 @@ jobs:
           print("Selected Termux package:", matches[0])
           PY
           PACKAGE_PATH="$(cat ../python-package-path.txt)"
-          curl -fL "https://packages.termux.dev/apt/termux-main/$PACKAGE_PATH" -o ../python-termux.deb
+          DOWNLOADED=0
+          for BASE in https://packages.termux.dev/apt/termux-main https://packages-cf.termux.dev/apt/termux-main https://termux.librehat.com/apt/termux-main; do
+            echo "Trying Termux mirror: $BASE"
+            if curl --retry 2 --retry-delay 2 -fL "$BASE/$PACKAGE_PATH" -o ../python-termux.deb; then
+              DOWNLOADED=1
+              break
+            fi
+          done
+          test "$DOWNLOADED" -eq 1
           dpkg-deb -x ../python-termux.deb ../termux-python
           PYROOT="$PWD/../termux-python/data/data/com.termux/files/usr"
           test -f "$PYROOT/include/python3.14/Python.h"

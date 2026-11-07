@@ -125,6 +125,7 @@ def search_match_score(query, title):
 
 
 def download_track(query, random_mode=False):
+    """Search and play Indian music from YouTube only; never substitute another service."""
     opts = {
         "format": "bestaudio[acodec!=none]/bestaudio/best",
         "outtmpl": str(CACHE / "%(id)s.%(ext)s"),
@@ -132,105 +133,105 @@ def download_track(query, random_mode=False):
         "quiet": True,
         "no_warnings": True,
         "restrictfilenames": True,
-        "ignoreerrors": True,
     }
 
     search_query = spotify_track_query(query) if is_spotify_url(query) else query
     if random_mode:
-        search_query = "popular music official audio"
+        search_query = "latest popular Hindi Indian Bollywood songs official audio"
 
-    # SoundCloud is tried first because YouTube is currently bot-blocking
-    # requests from GitHub Actions runners. YouTube remains a fallback.
-    targets = [query] if is_youtube_url(query) else [
-        "scsearch10:" + search_query,
-        "ytsearch5:" + search_query,
-    ]
+    if is_youtube_url(query):
+        candidates = [query]
+    else:
+        # Bias text searches toward Indian/Hindi music while preserving the
+        # requested title for strict relevance scoring.
+        yt_query = search_query
+        if not random_mode and not re.search(r"\\b(hindi|bollywood|indian)\\b", search_query, re.I):
+            yt_query += " Hindi Indian song"
+        target = "ytsearch10:" + yt_query
+        try:
+            search_opts = dict(opts)
+            search_opts["extract_flat"] = "in_playlist"
+            with yt_dlp.YoutubeDL(search_opts) as search_ydl:
+                search_info = search_ydl.extract_info(target, download=False)
+            entries = [
+                item for item in ((search_info or {}).get("entries") or [])
+                if item and item.get("id")
+            ]
+        except Exception as exc:
+            raise RuntimeError(
+                "YouTube search access nahi mila. GitHub runner par YouTube "
+                "bot-check/cookies ki zarurat ho sakti hai. Koi random song nahi chalaya. "
+                f"Details: {exc}"
+            ) from exc
+
+        if random_mode:
+            random.shuffle(entries)
+        else:
+            ranked = sorted(
+                entries,
+                key=lambda item: search_match_score(
+                    search_query, item.get("title") or ""
+                ),
+                reverse=True,
+            )
+            entries = [
+                item for item in ranked
+                if search_match_score(search_query, item.get("title") or "") >= 0.55
+            ]
+            if not entries:
+                raise RuntimeError(
+                    "YouTube par is naam ka matching song nahi mila. "
+                    "Artist ka naam ya exact song title likhkar try karo."
+                )
+        candidates = [
+            item.get("webpage_url") or item.get("url") or
+            ("https://www.youtube.com/watch?v=" + item["id"])
+            for item in entries
+        ]
+
     last_error = None
-
-    def save_result(ydl, info):
-        path = None
-        for item in info.get("requested_downloads") or []:
-            candidate = item.get("filepath")
-            if candidate and Path(candidate).is_file():
-                path = candidate
-                break
-        if not path:
-            candidate = ydl.prepare_filename(info)
-            if Path(candidate).is_file():
-                path = candidate
-        if not path:
-            candidates = list(CACHE.glob(f"{info['id']}.*"))
-            if candidates:
-                path = str(candidates[0])
-        if not path:
-            raise RuntimeError("Downloaded audio file not found")
-        return (
-            str(path),
-            info.get("title", "Music track"),
-            int(info.get("duration") or 0)
-        )
-
     with yt_dlp.YoutubeDL(opts) as ydl:
-        for target in targets:
-            source_name = target.split(":", 1)[0]
+        for candidate in candidates:
             try:
-                # Flat search avoids resolving the whole result list at once.
-                # A DRM/unavailable result is skipped without losing later hits.
-                search_opts = dict(opts)
-                search_opts["extract_flat"] = "in_playlist"
-                with yt_dlp.YoutubeDL(search_opts) as search_ydl:
-                    search_info = search_ydl.extract_info(target, download=False)
-                entries = [entry for entry in ((search_info or {}).get("entries") or []) if entry]
-                if random_mode:
-                    random.shuffle(entries)
-                else:
-                    # Rank results by title relevance and never play an unrelated hit.
-                    ranked = [
-                        (search_match_score(search_query, " ".join(str(entry.get(k) or "")
-                         for k in ("title", "uploader", "channel"))), entry)
-                        for entry in entries
-                    ]
-                    entries = [entry for score, entry in sorted(
-                        ranked, key=lambda item: item[0], reverse=True
-                    ) if score >= 0.50]
-                    if not entries:
-                        logging.warning("No relevant %s result for query: %s",
-                                        source_name, search_query)
-                        continue
-
-                for entry in entries:
-                    if not entry:
-                        continue
-                    webpage = entry.get("webpage_url") or entry.get("original_url")
-                    if not webpage and entry.get("id") and source_name == "soundcloud":
-                        webpage = "https://soundcloud.com/" + str(entry["id"])
-                    if not webpage:
-                        continue
-                    try:
-                        info = ydl.extract_info(webpage, download=True)
-                        if info and info.get("entries"):
-                            info = next((item for item in info["entries"] if item), None)
-                        if info:
-                            return save_result(ydl, info)
-                    except Exception as exc:
-                        last_error = exc
-                        logging.warning("Skipping %s result %s: %s",
-                                        source_name, entry.get("id", "?"), exc)
-                        continue
+                info = ydl.extract_info(candidate, download=True)
+                if info and info.get("entries"):
+                    info = next((item for item in info["entries"] if item), None)
+                if not info:
+                    continue
+                path = None
+                for item in info.get("requested_downloads") or []:
+                    candidate_path = item.get("filepath")
+                    if candidate_path and Path(candidate_path).is_file():
+                        path = candidate_path
+                        break
+                if not path:
+                    prepared = ydl.prepare_filename(info)
+                    if Path(prepared).is_file():
+                        path = prepared
+                if not path:
+                    matches = list(CACHE.glob(f"{info.get('id', '')}.*"))
+                    if matches:
+                        path = str(matches[0])
+                if path:
+                    return (
+                        str(path),
+                        info.get("title", "Music track"),
+                        int(info.get("duration") or 0),
+                    )
             except Exception as exc:
                 last_error = exc
-                logging.warning("Audio source search failed (%s): %s",
-                                source_name, exc)
+                logging.warning("Skipping YouTube result %s: %s", candidate, exc)
 
     raise RuntimeError(
-        "No playable result found. YouTube may be bot-blocked and SoundCloud "
-        "results may be DRM-protected or unavailable. "
+        "YouTube se matching song download nahi ho saka. Agar 'Sign in to confirm "
+        "you are not a bot' aaye, to GitHub runner ke liye YouTube cookies/session "
+        "authentication chahiye. SoundCloud ya random source par fallback nahi hoga. "
         f"Last error: {last_error}"
     )
 
 
 def download_video_track(query):
-    """Find and download a playable video without relying on YouTube cookies."""
+    """Find the requested song's YouTube video only."""
     opts = {
         "format": "best[height<=360][ext=mp4]/best[height<=360]/best",
         "outtmpl": str(CACHE / "video_%(id)s.%(ext)s"),
@@ -241,38 +242,50 @@ def download_video_track(query):
         "restrictfilenames": True,
     }
 
-    # Direct supported video URLs can be supplied by the user.
     if is_youtube_url(query):
         candidates = [query]
     elif urlparse(query).scheme in ("http", "https"):
-        candidates = [query]
+        raise RuntimeError("Video ke liye YouTube URL ya song ka naam do.")
     else:
-        # Dailymotion's public search API is used as a YouTube-independent source.
-        api = "https://api.dailymotion.com/videos?" + urlencode({
-            "search": query,
-            "fields": "id,title,url,duration",
-            "limit": "10",
-        })
-        request = __import__("urllib.request", fromlist=["Request"]).Request(
-            api, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        with urlopen(request, timeout=20) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        video_results = [
-            item for item in data.get("list", [])
-            if item.get("url") and item.get("title")
-        ]
-        # Keep video results tied to the requested song; don't stream a random clip.
-        video_results = [
-            item for item in video_results
-            if search_match_score(query, item.get("title", "")) >= 0.50
-        ]
-        candidates = [item["url"] for item in video_results]
-        if not candidates:
+        yt_query = query
+        if not re.search(r"\\b(hindi|bollywood|indian)\\b", query, re.I):
+            yt_query += " Hindi Indian song official video"
+        try:
+            search_opts = dict(opts)
+            search_opts["extract_flat"] = "in_playlist"
+            with yt_dlp.YoutubeDL(search_opts) as search_ydl:
+                search_info = search_ydl.extract_info(
+                    "ytsearch10:" + yt_query, download=False
+                )
+            entries = [
+                item for item in ((search_info or {}).get("entries") or [])
+                if item and item.get("id")
+            ]
+        except Exception as exc:
             raise RuntimeError(
-                "Requested song ka matching video Dailymotion par nahi mila. "
-                "Koi unrelated video play nahi kiya gaya."
+                "YouTube video search block/fail ho gaya. GitHub runner par "
+                "YouTube cookies/session ki zarurat ho sakti hai. "
+                f"Details: {exc}"
+            ) from exc
+
+        entries = sorted(
+            entries,
+            key=lambda item: search_match_score(query, item.get("title") or ""),
+            reverse=True,
+        )
+        entries = [
+            item for item in entries
+            if search_match_score(query, item.get("title") or "") >= 0.55
+        ]
+        if not entries:
+            raise RuntimeError(
+                "YouTube par is song ka matching video nahi mila; random video nahi chalaya."
             )
+        candidates = [
+            item.get("webpage_url") or item.get("url") or
+            ("https://www.youtube.com/watch?v=" + item["id"])
+            for item in entries
+        ]
 
     last_error = None
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -280,7 +293,7 @@ def download_video_track(query):
             try:
                 info = ydl.extract_info(candidate, download=True)
                 if info and info.get("entries"):
-                    info = next((entry for entry in info["entries"] if entry), None)
+                    info = next((item for item in info["entries"] if item), None)
                 if not info:
                     continue
                 path = None
@@ -301,11 +314,11 @@ def download_video_track(query):
                     return str(path), info.get("title", "Video"), int(info.get("duration") or 0)
             except Exception as exc:
                 last_error = exc
-                logging.warning("Skipping video result %s: %s", candidate, exc)
+                logging.warning("Skipping YouTube video %s: %s", candidate, exc)
 
     raise RuntimeError(
-        "Dailymotion/direct video source se playable video nahi mila. "
-        "YouTube URL GitHub runner par bot-check ki wajah se fail ho sakta hai. "
+        "YouTube se matching video download nahi hua. Bot-check aane par "
+        "cookies/session authentication ki zarurat hogi. "
         f"Last error: {last_error}"
     )
 
@@ -644,7 +657,7 @@ async def search_cmd(_, message):
     if len(parts) < 2:
         return await message.reply_text("Use: /search song name")
     try:
-        await message.reply_text("🔎 Searching YouTube + SoundCloud…")
+        await message.reply_text("🔎 Searching Indian/Hindi songs on YouTube…")
         await play_track(message.chat.id, parts[1])
     except Exception as exc:
         await message.reply_text(f"❌ Search failed: {type(exc).__name__}: {exc}")

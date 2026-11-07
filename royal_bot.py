@@ -101,15 +101,18 @@ def download_track(query, random_mode=False):
         "quiet": True,
         "no_warnings": True,
         "restrictfilenames": True,
+        "ignoreerrors": True,
     }
 
     search_query = spotify_track_query(query) if is_spotify_url(query) else query
     if random_mode:
         search_query = "popular music official audio"
 
+    # SoundCloud is tried first because YouTube is currently bot-blocking
+    # requests from GitHub Actions runners. YouTube remains a fallback.
     targets = [query] if is_youtube_url(query) else [
-        "ytsearch1:" + search_query,
-        "scsearch5:" + search_query,
+        "scsearch10:" + search_query,
+        "ytsearch5:" + search_query,
     ]
     last_error = None
 
@@ -138,23 +141,28 @@ def download_track(query, random_mode=False):
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         for target in targets:
+            source_name = target.split(":", 1)[0]
             try:
-                # Search first without downloading so DRM/unavailable results
-                # can be skipped individually instead of aborting the search.
-                search_info = ydl.extract_info(target, download=False)
-                entries = (
-                    [entry for entry in (search_info.get("entries") or []) if entry]
-                    if search_info and search_info.get("entries")
-                    else ([search_info] if search_info else [])
-                )
+                # Flat search avoids resolving the whole result list at once.
+                # A DRM/unavailable result is skipped without losing later hits.
+                search_opts = dict(opts)
+                search_opts["extract_flat"] = "in_playlist"
+                with yt_dlp.YoutubeDL(search_opts) as search_ydl:
+                    search_info = search_ydl.extract_info(target, download=False)
+                entries = (search_info or {}).get("entries") or []
                 if random_mode:
+                    entries = list(entries)
                     random.shuffle(entries)
 
                 for entry in entries:
+                    if not entry:
+                        continue
+                    webpage = entry.get("webpage_url") or entry.get("original_url")
+                    if not webpage and entry.get("id") and source_name == "soundcloud":
+                        webpage = "https://soundcloud.com/" + str(entry["id"])
+                    if not webpage:
+                        continue
                     try:
-                        webpage = entry.get("webpage_url") or entry.get("url")
-                        if not webpage:
-                            continue
                         info = ydl.extract_info(webpage, download=True)
                         if info and info.get("entries"):
                             info = next((item for item in info["entries"] if item), None)
@@ -162,19 +170,17 @@ def download_track(query, random_mode=False):
                             return save_result(ydl, info)
                     except Exception as exc:
                         last_error = exc
-                        logging.warning(
-                            "Skipping unavailable %s result: %s",
-                            target.split(":", 1)[0], exc
-                        )
+                        logging.warning("Skipping %s result %s: %s",
+                                        source_name, entry.get("id", "?"), exc)
+                        continue
             except Exception as exc:
                 last_error = exc
-                logging.warning(
-                    "Audio source search failed (%s): %s",
-                    target.split(":", 1)[0], exc
-                )
+                logging.warning("Audio source search failed (%s): %s",
+                                source_name, exc)
 
     raise RuntimeError(
-        "YouTube access blocked and SoundCloud results were unavailable/DRM protected. "
+        "No playable result found. YouTube may be bot-blocked and SoundCloud "
+        "results may be DRM-protected or unavailable. "
         f"Last error: {last_error}"
     )
 

@@ -36,8 +36,9 @@ mkdir -p "$HOME/ntgcalls-source"
 if [ ! -d "$NTG_DIR/.git" ]; then
   git clone --recurse-submodules --branch "$NTG_BRANCH" "$NTG_REPO" "$NTG_DIR"
 else
-  git -C "$NTG_DIR" fetch origin "$NTG_BRANCH"
-  git -C "$NTG_DIR" checkout "$NTG_BRANCH"
+  git -C "$NTG_DIR" fetch "$NTG_REPO" "$NTG_BRANCH"
+  git -C "$NTG_DIR" checkout -B "$NTG_BRANCH" FETCH_HEAD
+  git -C "$NTG_DIR" submodule sync --recursive
   git -C "$NTG_DIR" submodule update --init --recursive
 fi
 

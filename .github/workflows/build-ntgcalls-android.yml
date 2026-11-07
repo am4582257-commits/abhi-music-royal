@@ -1,0 +1,87 @@
+name: Build ntgcalls Android ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android-arm64:
+    name: NDK r30 / Clang 23 / arm64-v8a
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout ntgcalls v3.0.6 source
+        uses: actions/checkout@v4
+        with:
+          repository: pytgcalls/ntgcalls
+          ref: 0471e78
+          submodules: recursive
+          path: ntgcalls-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl wget unzip zip ninja-build nasm yasm pkg-config libssl-dev
+
+      - name: Limit Android build to ARM64
+        working-directory: ntgcalls-source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("setup.py")
+          s = p.read_text()
+          old = "'android': ['arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'],"
+          new = "'android': ['arm64-v8a'],"
+          if old not in s:
+              raise SystemExit("Could not find the expected Android architecture list; stopping safely.")
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+      - name: Build Android native library
+        working-directory: ntgcalls-source
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python setup.py build_lib --target=android --static
+
+      - name: Package ARM64 library and matching NDK C++ runtime
+        working-directory: ntgcalls-source
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist/ntgcalls-android-arm64
+
+          LIB="$(find targets/android -type f -path '*/ntgcalls/arm64-v8a/libntgcalls.a' -print -quit)"
+          test -n "$LIB" && test -s "$LIB"
+          cp "$LIB" ../dist/ntgcalls-android-arm64/libntgcalls.a
+
+          CXX_RUNTIME="$(find deps/ndk/src/toolchains/llvm/prebuilt -type f -path '*/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so' -print -quit)"
+          test -n "$CXX_RUNTIME" && test -s "$CXX_RUNTIME"
+          cp "$CXX_RUNTIME" ../dist/ntgcalls-android-arm64/libc++_shared.so
+
+          {
+            echo "ntgcalls source commit: 0471e78"
+            echo "ntgcalls version: 3.0.6"
+            echo "Android ABI: arm64-v8a"
+            echo "NDK: r30"
+            echo "Clang: 23"
+            echo "Built by GitHub Actions"
+          } > ../dist/ntgcalls-android-arm64/BUILD-INFO.txt
+
+          cd ../dist/ntgcalls-android-arm64
+          sha256sum libntgcalls.a libc++_shared.so > SHA256SUMS.txt
+          ls -lh
+
+      - name: Upload Android ARM64 build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntgcalls-3.0.6-android-arm64
+          path: dist/ntgcalls-android-arm64/
+          if-no-files-found: error
+          retention-days: 14

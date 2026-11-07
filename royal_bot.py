@@ -5,7 +5,7 @@ import random
 import time
 from pathlib import Path
 from urllib.parse import urlparse, urlencode
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
 import json
 import re
 from difflib import SequenceMatcher
@@ -124,6 +124,93 @@ def search_match_score(query, title):
     return max(token_score, phrase_score * 0.85)
 
 
+
+def download_track_invidious(query, random_mode=False):
+    """YouTube-only audio fallback through public Invidious frontends."""
+    instances = [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.privacyredirect.com",
+        "https://iv.datura.network",
+    ]
+    search_query = (
+        "latest popular Hindi Indian Bollywood songs official audio"
+        if random_mode else
+        (spotify_track_query(query) if is_spotify_url(query) else query)
+    )
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; ABHIMusicRoyal/1.0)"}
+    last_error = None
+
+    for base in instances:
+        try:
+            search_url = base + "/api/v1/search?" + urlencode({
+                "q": search_query, "type": "video"
+            })
+            req = Request(search_url, headers=headers)
+            with urlopen(req, timeout=12) as response:
+                results = json.loads(response.read().decode("utf-8"))
+            videos = [
+                item for item in results
+                if item.get("type") == "video" and item.get("videoId")
+            ]
+            if random_mode:
+                random.shuffle(videos)
+            else:
+                videos.sort(
+                    key=lambda item: search_match_score(
+                        search_query, item.get("title") or ""
+                    ),
+                    reverse=True,
+                )
+                videos = [
+                    item for item in videos
+                    if search_match_score(
+                        search_query, item.get("title") or ""
+                    ) >= 0.45
+                ]
+
+            for item in videos[:5]:
+                video_id = item["videoId"]
+                details_url = base + "/api/v1/videos/" + video_id
+                req = Request(details_url, headers=headers)
+                with urlopen(req, timeout=15) as response:
+                    details = json.loads(response.read().decode("utf-8"))
+                streams = [
+                    stream for stream in (details.get("adaptiveFormats") or [])
+                    if (stream.get("type") or "").startswith("audio/")
+                    and stream.get("url")
+                ]
+                if not streams:
+                    continue
+                streams.sort(
+                    key=lambda stream: int(stream.get("bitrate") or 0),
+                    reverse=True,
+                )
+                audio_url = streams[0]["url"]
+                target = CACHE / (video_id + "_invidious_audio")
+                req = Request(audio_url, headers=headers)
+                with urlopen(req, timeout=30) as response, target.open("wb") as out:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                if target.is_file() and target.stat().st_size > 0:
+                    return (
+                        str(target),
+                        details.get("title") or item.get("title") or "YouTube track",
+                        int(details.get("lengthSeconds") or item.get("lengthSeconds") or 0),
+                    )
+        except Exception as exc:
+            last_error = exc
+            logging.warning("Invidious fallback %s failed: %s", base, exc)
+
+    raise RuntimeError(
+        "YouTube yt-dlp aur Invidious fallback dono se audio nahi mila. "
+        "Public Invidious instances kabhi-kabhi unavailable ho sakte hain. "
+        f"Last fallback error: {last_error}"
+    )
+
 def download_track(query, random_mode=False):
     """Search and play Indian music from YouTube only; never substitute another service."""
     opts = {
@@ -158,11 +245,8 @@ def download_track(query, random_mode=False):
                 if item and item.get("id")
             ]
         except Exception as exc:
-            raise RuntimeError(
-                "YouTube search access nahi mila. GitHub runner par YouTube "
-                "bot-check/cookies ki zarurat ho sakti hai. Koi random song nahi chalaya. "
-                f"Details: {exc}"
-            ) from exc
+            logging.warning("YouTube search failed; trying Invidious: %s", exc)
+            return download_track_invidious(query, random_mode)
 
         if random_mode:
             random.shuffle(entries)
@@ -179,10 +263,7 @@ def download_track(query, random_mode=False):
                 if search_match_score(search_query, item.get("title") or "") >= 0.55
             ]
             if not entries:
-                raise RuntimeError(
-                    "YouTube par is naam ka matching song nahi mila. "
-                    "Artist ka naam ya exact song title likhkar try karo."
-                )
+                return download_track_invidious(query, random_mode)
         candidates = [
             item.get("webpage_url") or item.get("url") or
             ("https://www.youtube.com/watch?v=" + item["id"])
@@ -222,12 +303,8 @@ def download_track(query, random_mode=False):
                 last_error = exc
                 logging.warning("Skipping YouTube result %s: %s", candidate, exc)
 
-    raise RuntimeError(
-        "YouTube se matching song download nahi ho saka. Agar 'Sign in to confirm "
-        "you are not a bot' aaye, to GitHub runner ke liye YouTube cookies/session "
-        "authentication chahiye. SoundCloud ya random source par fallback nahi hoga. "
-        f"Last error: {last_error}"
-    )
+    logging.warning("yt-dlp could not download a result; trying Invidious: %s", last_error)
+    return download_track_invidious(query, random_mode)
 
 
 def download_video_track(query):

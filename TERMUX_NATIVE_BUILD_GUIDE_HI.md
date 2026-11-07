@@ -57,12 +57,12 @@ pip install -r requirements.txt
 
 ## 4. ntgcalls source checkout
 
-इस setup में Termux-compatible source fork की termux-runtime-fix branch इस्तेमाल हुई:
+इस setup में Termux-compatible source fork की termux-android-arm64-fix branch इस्तेमाल हुई:
 
 ~~~bash
 mkdir -p ~/ntgcalls-source
 cd ~/ntgcalls-source
-git clone -b termux-runtime-fix https://github.com/am4582257-commits/ntgcalls.git ntgcalls-git
+git clone -b termux-android-arm64-fix https://github.com/am4582257-commits/ntgcalls.git ntgcalls-git
 cd ntgcalls-git
 ~~~
 

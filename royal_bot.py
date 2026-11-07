@@ -77,7 +77,7 @@ def is_spotify_url(text):
     try:
         u = urlparse(text.strip())
         return u.hostname in ("open.spotify.com", "www.spotify.com") and (
-            u.path.startswith("/track/") or u.path.startswith("/album/"))
+            u.path.startswith("/track/"))
     except Exception:
         return False
 
@@ -393,7 +393,7 @@ async def start(_, message):
 async def play_cmd(_, message):
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
-        return await message.reply_text("Use: /play YouTube-link or song name")
+        return await message.reply_text("Use: /play song name, YouTube link, or Spotify track link")
     try:
         await message.reply_text(
             "━━━━━━━━━━━━━━━━━━━━\\n"
@@ -419,7 +419,7 @@ async def search_cmd(_, message):
     if len(parts) < 2:
         return await message.reply_text("Use: /search song name")
     try:
-        await message.reply_text("🔎 Searching YouTube…")
+        await message.reply_text("🔎 Searching YouTube + SoundCloud…")
         await play_track(message.chat.id, parts[1])
     except Exception as exc:
         await message.reply_text(f"❌ Search failed: {type(exc).__name__}: {exc}")

@@ -2,6 +2,9 @@ name: Build ntgcalls Android ARM64
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-ntgcalls-android.yml"
 
 permissions:
   contents: read
@@ -17,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: pytgcalls/ntgcalls
-          ref: "0471e78"
+          ref: "0471e78c5f82b3643516f1af395fd0b2b7853223"
           submodules: recursive
           path: ntgcalls-source
 
@@ -63,7 +66,7 @@ jobs:
           test -n "$CXX_RUNTIME" && test -s "$CXX_RUNTIME"
           cp "$CXX_RUNTIME" ../dist/ntgcalls-android-arm64/libc++_shared.so
           {
-            echo "ntgcalls source commit: 0471e78"
+            echo "ntgcalls source commit: 0471e78c5f82b3643516f1af395fd0b2b7853223"
             echo "ntgcalls version: 3.0.6"
             echo "Android ABI: arm64-v8a"
             echo "NDK: r30"

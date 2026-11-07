@@ -4,7 +4,9 @@ import os
 import random
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
+from urllib.request import urlopen
+import json
 
 import yt_dlp
 from dotenv import load_dotenv
@@ -71,6 +73,26 @@ def is_youtube_url(text):
     except Exception:
         return False
 
+def is_spotify_url(text):
+    try:
+        u = urlparse(text.strip())
+        return u.hostname in ("open.spotify.com", "www.spotify.com") and (
+            u.path.startswith("/track/") or u.path.startswith("/album/"))
+    except Exception:
+        return False
+
+
+def spotify_track_query(url):
+    endpoint = "https://open.spotify.com/oembed?" + urlencode({"url": url})
+    with urlopen(endpoint, timeout=15) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    title = (data.get("title") or "").strip()
+    artist = (data.get("author_name") or "").strip()
+    if not title:
+        raise RuntimeError("Spotify link se track details nahi mil sake")
+    return f"{title} {artist}".strip()
+
+
 def download_track(query, random_mode=False):
     opts = {
         "format": "bestaudio[acodec!=none]/bestaudio/best",
@@ -80,39 +102,61 @@ def download_track(query, random_mode=False):
         "no_warnings": True,
         "restrictfilenames": True,
     }
+
+    search_query = query
+    if is_spotify_url(query):
+        search_query = spotify_track_query(query)
+
+    if random_mode:
+        search_query = "popular music official audio"
+
+    if is_youtube_url(query):
+        targets = [query]
+    else:
+        targets = ["ytsearch1:" + search_query, "scsearch1:" + search_query]
+
+    last_error = None
     with yt_dlp.YoutubeDL(opts) as ydl:
-        if random_mode:
-            info = ydl.extract_info(
-                "ytsearch10:popular music official audio", download=False)
-            entries = [e for e in (info.get("entries") or []) if e]
-            if not entries:
-                raise RuntimeError("YouTube search returned no results")
-            target = random.choice(entries)["webpage_url"]
-        else:
-            target = query if is_youtube_url(query) else "ytsearch1:" + query
+        for target in targets:
+            try:
+                info = ydl.extract_info(target, download=True)
+                if info and info.get("entries"):
+                    entries = [entry for entry in info["entries"] if entry]
+                    if not entries:
+                        raise RuntimeError("Search returned no results")
+                    info = random.choice(entries) if random_mode else entries[0]
+                if not info:
+                    raise RuntimeError("No track result found")
 
-        info = ydl.extract_info(target, download=True)
-        if info and info.get("entries"):
-            info = next((e for e in info["entries"] if e), None)
-        if not info:
-            raise RuntimeError("No YouTube result found")
+                path = None
+                for item in info.get("requested_downloads") or []:
+                    candidate = item.get("filepath")
+                    if candidate and Path(candidate).is_file():
+                        path = candidate
+                        break
+                if not path:
+                    candidate = ydl.prepare_filename(info)
+                    if Path(candidate).is_file():
+                        path = candidate
+                if not path:
+                    candidates = list(CACHE.glob(f"{info['id']}.*"))
+                    if not candidates:
+                        raise RuntimeError("Downloaded audio file not found")
+                    path = str(candidates[0])
 
-        path = None
-        for item in info.get("requested_downloads") or []:
-            candidate = item.get("filepath")
-            if candidate and Path(candidate).is_file():
-                path = candidate
-                break
-        if not path:
-            candidate = ydl.prepare_filename(info)
-            if Path(candidate).is_file():
-                path = candidate
-        if not path:
-            candidates = list(CACHE.glob(f"{info['id']}.*"))
-            if not candidates:
-                raise RuntimeError("Downloaded audio file not found")
-            path = str(candidates[0])
-        return str(path), info.get("title", "YouTube track"), int(info.get("duration") or 0)
+                return (
+                    str(path),
+                    info.get("title", "Music track"),
+                    int(info.get("duration") or 0)
+                )
+            except Exception as exc:
+                last_error = exc
+                logging.warning("Audio source failed (%s): %s", target.split(":", 1)[0], exc)
+
+    raise RuntimeError(
+        "YouTube aur SoundCloud dono se track nahi mil saka. "
+        f"Last error: {last_error}"
+    )
 
 async def make_pcm(source, title):
     pcm = CACHE / (Path(source).stem + "_playback.pcm")

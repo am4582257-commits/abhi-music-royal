@@ -7,6 +7,8 @@ from pathlib import Path
 from urllib.parse import urlparse, urlencode
 from urllib.request import urlopen
 import json
+import re
+from difflib import SequenceMatcher
 
 import yt_dlp
 from dotenv import load_dotenv
@@ -93,6 +95,35 @@ def spotify_track_query(url):
     return f"{title} {artist}".strip()
 
 
+def search_match_score(query, title):
+    """Score how closely a search result title matches the requested track."""
+    stop = {
+        "new", "song", "songs", "latest", "official", "audio", "video",
+        "lyrics", "lyric", "full", "hd", "4k", "music", "status",
+        " slowed", "reverb"
+    }
+    q_words = re.findall(r"[a-z0-9]+", (query or "").lower())
+    q_words = [w for w in q_words if w not in stop and len(w) > 1]
+    t_words = re.findall(r"[a-z0-9]+", (title or "").lower())
+    if not q_words or not t_words:
+        return 0.0
+    # Also compare joined neighboring words (e.g. "chal re" vs "chalre").
+    title_words = set(t_words)
+    title_words.update(t_words[i] + t_words[i + 1] for i in range(len(t_words) - 1))
+    unique_query = list(dict.fromkeys(q_words))
+    matched = 0
+    for word in unique_query:
+        best = max((SequenceMatcher(None, word, candidate).ratio()
+                    for candidate in title_words), default=0.0)
+        if best >= 0.70:
+            matched += 1
+    token_score = matched / len(unique_query)
+    phrase_score = SequenceMatcher(
+        None, " ".join(unique_query), " ".join(t_words)
+    ).ratio()
+    return max(token_score, phrase_score * 0.85)
+
+
 def download_track(query, random_mode=False):
     opts = {
         "format": "bestaudio[acodec!=none]/bestaudio/best",
@@ -149,10 +180,23 @@ def download_track(query, random_mode=False):
                 search_opts["extract_flat"] = "in_playlist"
                 with yt_dlp.YoutubeDL(search_opts) as search_ydl:
                     search_info = search_ydl.extract_info(target, download=False)
-                entries = (search_info or {}).get("entries") or []
+                entries = [entry for entry in ((search_info or {}).get("entries") or []) if entry]
                 if random_mode:
-                    entries = list(entries)
                     random.shuffle(entries)
+                else:
+                    # Rank results by title relevance and never play an unrelated hit.
+                    ranked = [
+                        (search_match_score(search_query, " ".join(str(entry.get(k) or "")
+                         for k in ("title", "uploader", "channel"))), entry)
+                        for entry in entries
+                    ]
+                    entries = [entry for score, entry in sorted(
+                        ranked, key=lambda item: item[0], reverse=True
+                    ) if score >= 0.50]
+                    if not entries:
+                        logging.warning("No relevant %s result for query: %s",
+                                        source_name, search_query)
+                        continue
 
                 for entry in entries:
                     if not entry:
@@ -214,10 +258,21 @@ def download_video_track(query):
         )
         with urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
-        candidates = [
-            item.get("url") for item in data.get("list", [])
-            if item.get("url")
+        video_results = [
+            item for item in data.get("list", [])
+            if item.get("url") and item.get("title")
         ]
+        # Keep video results tied to the requested song; don't stream a random clip.
+        video_results = [
+            item for item in video_results
+            if search_match_score(query, item.get("title", "")) >= 0.50
+        ]
+        candidates = [item["url"] for item in video_results]
+        if not candidates:
+            raise RuntimeError(
+                "Requested song ka matching video Dailymotion par nahi mila. "
+                "Koi unrelated video play nahi kiya gaya."
+            )
 
     last_error = None
     with yt_dlp.YoutubeDL(opts) as ydl:

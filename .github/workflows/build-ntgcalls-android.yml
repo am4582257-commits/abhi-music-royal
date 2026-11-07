@@ -71,22 +71,25 @@ jobs:
                   if ": " in line and not line.startswith(" "):
                       key, value = line.split(": ", 1)
                       fields[key] = value
-              if fields.get("Package") == "python" and fields.get("Version", "").startswith("3.14.10"):
-                  matches.append(fields.get("Filename", ""))
-          if len(matches) != 1 or not matches[0]:
-              raise SystemExit("Could not identify exactly one Termux Python 3.14.10 ARM64 package.")
-          Path("../python-package-path.txt").write_text(matches[0])
-          print("Selected Termux package:", matches[0])
+              version = fields.get("Version", "")
+              filename = fields.get("Filename", "")
+              if fields.get("Package") == "python" and version.startswith("3.14.") and filename:
+                  matches.append((version, filename))
+          if not matches:
+              raise SystemExit("No Termux Python 3.14 ARM64 package found in repository index.")
+          matches.sort(key=lambda item: tuple(int(x) for x in item[0].split("-")[0].split(".")), reverse=True)
+          Path("../python-package-candidates.txt").write_text("\n".join(path for _, path in matches))
+          print("Found Python 3.14 package candidates:", len(matches))
           PY
-          PACKAGE_PATH="$(cat ../python-package-path.txt)"
           DOWNLOADED=0
-          for BASE in https://packages.termux.dev/apt/termux-main https://packages-cf.termux.dev/apt/termux-main https://termux.librehat.com/apt/termux-main; do
-            echo "Trying Termux mirror: $BASE"
-            if curl --retry 2 --retry-delay 2 -fL "$BASE/$PACKAGE_PATH" -o ../python-termux.deb; then
-              DOWNLOADED=1
-              break
-            fi
-          done
+          while IFS= read -r PACKAGE_PATH; do
+            for BASE in https://packages.termux.dev/apt/termux-main https://packages-cf.termux.dev/apt/termux-main https://termux.librehat.com/apt/termux-main; do
+              if curl --retry 1 --retry-delay 1 -fsSL "$BASE/$PACKAGE_PATH" -o ../python-termux.deb; then
+                DOWNLOADED=1
+                break 2
+              fi
+            done
+          done < ../python-package-candidates.txt
           test "$DOWNLOADED" -eq 1
           dpkg-deb -x ../python-termux.deb ../termux-python
           PYROOT="$PWD/../termux-python/data/data/com.termux/files/usr"

@@ -24,11 +24,6 @@ jobs:
           submodules: recursive
           path: ntgcalls-source
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
       - name: Install build prerequisites
         run: |
           sudo apt-get update
@@ -54,62 +49,6 @@ jobs:
           python -m pip install --upgrade pip setuptools
           python setup.py build_lib --target=android --static
 
-      - name: Prepare matching Termux Python 3.14 Android development files
-        working-directory: ntgcalls-source
-        run: |
-          set -euo pipefail
-          mkdir -p ../termux-python
-          curl -fsSL https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.xz -o ../Packages.xz
-          xz -dc ../Packages.xz > ../Packages
-          python - <<'PY'
-          from pathlib import Path
-          text = Path("../Packages").read_text()
-          matches = []
-          for block in text.split("\n\n"):
-              fields = {}
-              for line in block.splitlines():
-                  if ": " in line and not line.startswith(" "):
-                      key, value = line.split(": ", 1)
-                      fields[key] = value
-              version = fields.get("Version", "")
-              filename = fields.get("Filename", "")
-              if fields.get("Package") == "python" and version.startswith("3.14.") and filename:
-                  matches.append((version, filename))
-          if not matches:
-              raise SystemExit("No Termux Python 3.14 ARM64 package found in repository index.")
-          matches.sort(key=lambda item: tuple(int(x) for x in item[0].split("-")[0].split(".")), reverse=True)
-          Path("../python-package-candidates.txt").write_text("\n".join(path for _, path in matches))
-          print("Found Python 3.14 package candidates:", len(matches))
-          PY
-          DOWNLOADED=0
-          while IFS= read -r PACKAGE_PATH; do
-            for BASE in https://packages.termux.dev/apt/termux-main https://packages-cf.termux.dev/apt/termux-main https://termux.librehat.com/apt/termux-main; do
-              if curl --retry 1 --retry-delay 1 -fsSL "$BASE/$PACKAGE_PATH" -o ../python-termux.deb; then
-                DOWNLOADED=1
-                break 2
-              fi
-            done
-          done < ../python-package-candidates.txt
-          test "$DOWNLOADED" -eq 1
-          dpkg-deb -x ../python-termux.deb ../termux-python
-          PYROOT="$PWD/../termux-python/data/data/com.termux/files/usr"
-          test -f "$PYROOT/include/python3.14/Python.h"
-          PYLIB="$(find "$PYROOT/lib" -maxdepth 1 -name 'libpython3.14.so*' -type f -print -quit)"
-          test -n "$PYLIB" && test -s "$PYLIB"
-          echo "TERMUX_PYROOT=$PYROOT" >> "$GITHUB_ENV"
-          echo "TERMUX_PYLIB=$PYLIB" >> "$GITHUB_ENV"
-          echo "Termux Python 3.14 headers and library found."
-
-      - name: Cross-compile Python binding for Android ARM64
-        working-directory: ntgcalls-source
-        run: |
-          set -euo pipefail
-          mkdir -p ../dist/python-binding
-          cmake -S . -B build-python-android -DCMAKE_BUILD_TYPE=Release -DSTATIC_BUILD=ON -DBINDING=python -DANDROID_ABI=arm64-v8a -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/Toolchain.cmake" -DPython_EXECUTABLE="$(command -v python)" -DPython_INCLUDE_DIR="$TERMUX_PYROOT/include/python3.14" -DPython_LIBRARY="$TERMUX_PYLIB" -DPython_FIND_VERSION=3.14 -DPython_FIND_STRATEGY=LOCATION -DPython_FIND_IMPLEMENTATIONS=CPython -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PWD/../dist/python-binding"
-          cmake --build build-python-android --target ntgcalls --config Release -j2
-          find ../dist/python-binding -maxdepth 1 -type f -name '*.so' -print -exec ls -lh {} \;
-          test -n "$(find ../dist/python-binding -maxdepth 1 -type f -name '*.so' -print -quit)"
-
       - name: Package ARM64 library and matching NDK C++ runtime
         working-directory: ntgcalls-source
         run: |
@@ -132,16 +71,6 @@ jobs:
           cd ../dist/ntgcalls-android-arm64
           sha256sum libntgcalls.a libc++_shared.so > SHA256SUMS.txt
           ls -lh
-
-      - name: Upload Android ARM64 Python binding test artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ntgcalls-3.0.6-python314-android-arm64
-          path: |
-            dist/python-binding/*.so
-            dist/ntgcalls-android-arm64/libc++_shared.so
-          if-no-files-found: error
-          retention-days: 14
 
       - name: Upload Android ARM64 build
         uses: actions/upload-artifact@v4

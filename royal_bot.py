@@ -162,12 +162,15 @@ def download_track_invidious(query, random_mode=False):
                     ),
                     reverse=True,
                 )
-                videos = [
+                matched_videos = [
                     item for item in videos
                     if search_match_score(
                         search_query, item.get("title") or ""
                     ) >= 0.45
                 ]
+                # Devanagari Hindi titles may not score with the Latin-token matcher.
+                # In that case, trust Invidious' own relevance order.
+                videos = matched_videos if matched_videos else videos
 
             for item in videos[:5]:
                 video_id = item["videoId"]

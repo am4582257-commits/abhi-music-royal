@@ -214,8 +214,99 @@ def download_track_invidious(query, random_mode=False):
         f"Last fallback error: {last_error}"
     )
 
+def download_track_soundcloud(query, random_mode=False):
+    """Backup music source: search and download audio from SoundCloud."""
+    search_query = (
+        "popular Hindi Bollywood Indian songs"
+        if random_mode else
+        (spotify_track_query(query) if is_spotify_url(query) else query)
+    )
+    opts = {
+        "format": "bestaudio/best",
+        "outtmpl": str(CACHE / "soundcloud_%(id)s.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "restrictfilenames": True,
+    }
+    with yt_dlp.YoutubeDL({**opts, "extract_flat": "in_playlist"}) as search_ydl:
+        search_info = search_ydl.extract_info("scsearch10:" + search_query, download=False)
+    entries = [
+        item for item in ((search_info or {}).get("entries") or [])
+        if item and (item.get("webpage_url") or item.get("url"))
+    ]
+    if not entries:
+        raise RuntimeError("SoundCloud search returned no tracks")
+    if random_mode:
+        random.shuffle(entries)
+    else:
+        entries.sort(
+            key=lambda item: search_match_score(
+                search_query, item.get("title") or ""
+            ),
+            reverse=True,
+        )
+        matched = [
+            item for item in entries
+            if search_match_score(search_query, item.get("title") or "") >= 0.40
+        ]
+        if matched:
+            entries = matched
+    last_error = None
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        for item in entries[:6]:
+            try:
+                info = ydl.extract_info(
+                    item.get("webpage_url") or item.get("url"), download=True
+                )
+                if info and info.get("entries"):
+                    info = next((entry for entry in info["entries"] if entry), None)
+                if not info:
+                    continue
+                path = None
+                for downloaded in info.get("requested_downloads") or []:
+                    candidate_path = downloaded.get("filepath")
+                    if candidate_path and Path(candidate_path).is_file():
+                        path = candidate_path
+                        break
+                if not path:
+                    prepared = ydl.prepare_filename(info)
+                    if Path(prepared).is_file():
+                        path = prepared
+                if not path:
+                    matches = list(CACHE.glob(f"soundcloud_{info.get('id', '')}.*"))
+                    if matches:
+                        path = str(matches[0])
+                if path:
+                    return (
+                        str(path),
+                        info.get("title") or item.get("title") or "SoundCloud track",
+                        int(info.get("duration") or item.get("duration") or 0),
+                    )
+            except Exception as exc:
+                last_error = exc
+                logging.warning("Skipping SoundCloud result: %s", exc)
+    raise RuntimeError(f"SoundCloud could not download a matching track: {last_error}")
+
+
+def download_track_backup(query, random_mode=False):
+    """Try SoundCloud first, then public Invidious instances."""
+    errors = []
+    for source_name, downloader in (
+        ("SoundCloud", download_track_soundcloud),
+        ("Invidious", download_track_invidious),
+    ):
+        try:
+            result = downloader(query, random_mode)
+            logging.warning("Using %s as the music backup source", source_name)
+            return result
+        except Exception as exc:
+            errors.append(f"{source_name}: {exc}")
+            logging.warning("%s backup failed: %s", source_name, exc)
+    raise RuntimeError("YouTube primary and backup sources failed. " + " | ".join(errors))
+
 def download_track(query, random_mode=False):
-    """Search and play Indian music from YouTube only; never substitute another service."""
+    """Use YouTube as primary; fall back to SoundCloud, then Invidious."""
     opts = {
         "format": "bestaudio[acodec!=none]/bestaudio/best",
         "outtmpl": str(CACHE / "%(id)s.%(ext)s"),
@@ -248,8 +339,8 @@ def download_track(query, random_mode=False):
                 if item and item.get("id")
             ]
         except Exception as exc:
-            logging.warning("YouTube search failed; trying Invidious: %s", exc)
-            return download_track_invidious(query, random_mode)
+            logging.warning("YouTube search failed; trying backup sources: %s", exc)
+            return download_track_backup(query, random_mode)
 
         if random_mode:
             random.shuffle(entries)
@@ -266,7 +357,7 @@ def download_track(query, random_mode=False):
                 if search_match_score(search_query, item.get("title") or "") >= 0.55
             ]
             if not entries:
-                return download_track_invidious(query, random_mode)
+                return download_track_backup(query, random_mode)
         candidates = [
             item.get("webpage_url") or item.get("url") or
             ("https://www.youtube.com/watch?v=" + item["id"])
@@ -306,8 +397,8 @@ def download_track(query, random_mode=False):
                 last_error = exc
                 logging.warning("Skipping YouTube result %s: %s", candidate, exc)
 
-    logging.warning("yt-dlp could not download a result; trying Invidious: %s", last_error)
-    return download_track_invidious(query, random_mode)
+    logging.warning("YouTube download failed; trying backup sources: %s", last_error)
+    return download_track_backup(query, random_mode)
 
 
 def download_video_track(query):

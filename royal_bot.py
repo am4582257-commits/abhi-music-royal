@@ -103,58 +103,78 @@ def download_track(query, random_mode=False):
         "restrictfilenames": True,
     }
 
-    search_query = query
-    if is_spotify_url(query):
-        search_query = spotify_track_query(query)
-
+    search_query = spotify_track_query(query) if is_spotify_url(query) else query
     if random_mode:
         search_query = "popular music official audio"
 
-    if is_youtube_url(query):
-        targets = [query]
-    else:
-        targets = ["ytsearch1:" + search_query, "scsearch1:" + search_query]
-
+    targets = [query] if is_youtube_url(query) else [
+        "ytsearch1:" + search_query,
+        "scsearch5:" + search_query,
+    ]
     last_error = None
+
+    def save_result(ydl, info):
+        path = None
+        for item in info.get("requested_downloads") or []:
+            candidate = item.get("filepath")
+            if candidate and Path(candidate).is_file():
+                path = candidate
+                break
+        if not path:
+            candidate = ydl.prepare_filename(info)
+            if Path(candidate).is_file():
+                path = candidate
+        if not path:
+            candidates = list(CACHE.glob(f"{info['id']}.*"))
+            if candidates:
+                path = str(candidates[0])
+        if not path:
+            raise RuntimeError("Downloaded audio file not found")
+        return (
+            str(path),
+            info.get("title", "Music track"),
+            int(info.get("duration") or 0)
+        )
+
     with yt_dlp.YoutubeDL(opts) as ydl:
         for target in targets:
             try:
-                info = ydl.extract_info(target, download=True)
-                if info and info.get("entries"):
-                    entries = [entry for entry in info["entries"] if entry]
-                    if not entries:
-                        raise RuntimeError("Search returned no results")
-                    info = random.choice(entries) if random_mode else entries[0]
-                if not info:
-                    raise RuntimeError("No track result found")
-
-                path = None
-                for item in info.get("requested_downloads") or []:
-                    candidate = item.get("filepath")
-                    if candidate and Path(candidate).is_file():
-                        path = candidate
-                        break
-                if not path:
-                    candidate = ydl.prepare_filename(info)
-                    if Path(candidate).is_file():
-                        path = candidate
-                if not path:
-                    candidates = list(CACHE.glob(f"{info['id']}.*"))
-                    if not candidates:
-                        raise RuntimeError("Downloaded audio file not found")
-                    path = str(candidates[0])
-
-                return (
-                    str(path),
-                    info.get("title", "Music track"),
-                    int(info.get("duration") or 0)
+                # Search first without downloading so DRM/unavailable results
+                # can be skipped individually instead of aborting the search.
+                search_info = ydl.extract_info(target, download=False)
+                entries = (
+                    [entry for entry in (search_info.get("entries") or []) if entry]
+                    if search_info and search_info.get("entries")
+                    else ([search_info] if search_info else [])
                 )
+                if random_mode:
+                    random.shuffle(entries)
+
+                for entry in entries:
+                    try:
+                        webpage = entry.get("webpage_url") or entry.get("url")
+                        if not webpage:
+                            continue
+                        info = ydl.extract_info(webpage, download=True)
+                        if info and info.get("entries"):
+                            info = next((item for item in info["entries"] if item), None)
+                        if info:
+                            return save_result(ydl, info)
+                    except Exception as exc:
+                        last_error = exc
+                        logging.warning(
+                            "Skipping unavailable %s result: %s",
+                            target.split(":", 1)[0], exc
+                        )
             except Exception as exc:
                 last_error = exc
-                logging.warning("Audio source failed (%s): %s", target.split(":", 1)[0], exc)
+                logging.warning(
+                    "Audio source search failed (%s): %s",
+                    target.split(":", 1)[0], exc
+                )
 
     raise RuntimeError(
-        "YouTube aur SoundCloud dono se track nahi mil saka. "
+        "YouTube access blocked and SoundCloud results were unavailable/DRM protected. "
         f"Last error: {last_error}"
     )
 
